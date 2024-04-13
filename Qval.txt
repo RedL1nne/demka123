@@ -1,0 +1,307 @@
+Если не уверены, что справитесь с первого раза, то нужно сделать бэкапы, заходим в VMware под своим адресом, 
+нажимаете на машину и сделать снимок состояния. 
+Теперь при любом косяке можно вернутся в начало либо делать снимки при достижении какого-либо этапа.
+Первым делом заходим в нетворги и создаем группы портов столько сколько нужно по заданию
+INT
+HQ
+BR
+Далее заходим в каждую машину и по топологии добавляем столько портов сколько нужно, оставляя 1 как выход в инет,
+и так с каждой машиной.
+
+Теперь пока все не испорчено или правильно сделано, скачаем все что нужно для выполнения заданий в дальнейшем:
+Apt install frr(для frr, на всех роутерах(HQ, BR, ISP)
+Apt install isc-dhcp-server(для dhcp, только на HQ)
+Apt install radvd(настройка маршрутизации)
+Apt install iperf3(для измерения пропускной способности на 2х маршрутизаторах HQ и ISP)
+Apt install bind9 dnsutils(пакеты для днс будет стоять на сервере)
+
+Если закачка не идет то нужно вводить эти команды пока не заработает:
+Dhclient -r
+Dhclient -v
+Далее заходим на каждую машину и переименовываем их, там же вводим адрес в соответствии с топологией.
+Все можно ввести, введя команду nmtui, если его нет вводим команду apt install network-manager,
+в Set system hostname вводим имя, в Edit a connection вводим адреса, 
+и вторая вкладка перезапускаем чтобы настройки принялись.
+HQ - 192.168.2.0/26 255.255.255.192 - 2001::2:0/122 SRV.2 HQ-R.1
+HQ-ISP - 192.168.11.0/30 255.255.255.252 - 2001::11:0/125 HQ-R.1 ISP.2
+INT - 192.168.1.0/24 255.255.255.0 - 2001::1:0/120 CLI.2 ISP.1
+ISP-BR - 192.168.10.0/30 255.255.255.252 - 2001::10:0/125 BR-R.1 ISP.2
+BR - 192.168.3.0/28 - 255.255.255.240 - 2001::3:0/124 SRV.2 BR-R.1
+После ввода имени нужно прописать команду newgrp это нужно для обновления, чтобы имя встало сразу.
+
+Настройка FRR
+Nano /etc/frr/daemons
+ospfd=yes
+ospf6d=yes
+Systemctl restart frr
+Vtysh
+Conf t
+Router ospf
+Ospf router-id 1.1.1.1|2.2.2.2|3.3.3.3
+HQ – Network 192.168.11.3/30 area 0  
+HQ – Network 192.168.2.0/26 area 1 
+ISP – network 192.168.11.3/30 area 0 
+ISP – network 192.168.1.0/24 area 2 
+ISP – network 192.168.10.3/30 area 0 
+BR – network 192.168.10.3/30 area 0
+BR – network 192.168.3.0/28 area 3
+Ex
+Ex
+Write
+Ex
+Nano /etc/sysctl.conf
+переменную net.ipv4.ip_forward=1 необходимо раскоментить и сохранить изменения в файле, 
+и применить изменения командой sysctl -p
+Так же и с 6 net.ipv6.conf.all.forwarding=1
+ 
+Router ospf6
+Ospf6 router-id 0.0.0.1|0.0.0.2|0.0.0.3
+HQ – Area 0.0.0.0 range 2001::11:0/126
+HQ – Area 0.0.0.0 range 2001::2:0/122
+ISP – area 0.0.0.0 range 2001::11:0/126
+ISP – area 0.0.0.0 range 2001::1:0/120
+ISP – area 0.0.0.0 range 2001::10:0/126
+BR – area 0.0.0.0 range 2001::10:0/126
+BR – area 0.0.0.0 range 2001::3:0/124
+Ex
+Ex
+Write
+Ex
+
+Настройка DHCP
+nano /etc/default/isc-dhcp-server
+Interfacesv4="ens* ens*"
+Interfacesv6="ens* ens*"
+
+nano /etc/dhcp/dhcpd.conf
+default-lease-time 600;
+max-lease-time 7200;
+#ddns-updates on;
+#ddns-update-style interim;
+autoritative;
+
+nano /etc/default/isc-dhcp-server
+раскомментить все v4 и если по задание необходимо и v6
+изменить так же нужно: DHCPv4_PID=/var/run/dhclient.ens192.pid(192 если этот int интернет)
+
+subnet 192.168.2.0 netmask 255.255.255.192 {
+ range 192.168.2.3 192.168.2.60;
+ option routers 192.168.2.1;
+# option domain-name "hq.work";
+# option domain-name-servers 192.168.2.2;
+}
+#subnet 192.168.2.0 netmask 255.255.255.192 { (не надо)
+ range 192.168.2.3 192.168.2.60;
+ option routers 192.168.2.1;
+# option domain-name "br.work";
+# option domain-name-servers 192.168.2.2;
+}
+#subnet 192.168.2.0 netmask 255.255.255.192 { (не надо)
+ range 192.168.2.3 192.168.2.60;
+ option routers 192.168.2.1;
+# option domain-name "int.work";
+# option domain-name-servers 192.168.2.2;
+}
+после каждого изменения конфигурации необходимо перезагружать DHCP сервер для применения конфигурации
+systemctl stop isc-dhcp-server
+systemctl start isc-dhcp-server
+А для того, чтобы после перезагрузки DHCP-сервер автоматически включался можно воспользоваться командой 
+systemctl enable isc-dhcp-server
+v6
+nano /etc/dhcp/dhcpd6.conf
+default-lease-time 2592000;
+preferred-lifetime 604800;
+option dhcp-renewal-time 3600;
+option dhcp-rebinding-time 7200;
+allow leasequery;
+
+subnet6 2001::2:0/122 {
+	range6 2001::2:3 2001::2:3e;
+option dhcp6.name-servers 2001::2:2;
+option dhcp6.domain-search "hq.work";
+}
+option dhcp6.info-refresh-time 21600;
+autoritative;
+
+
+radvd
+После установки нужно сконфигурировать файл по пути /etc/radvd.conf следующего содержания
+interface ens*
+{
+MinRtrAdvInterval 3;
+MaxRtrAdvInterval 60;
+AdvSendAdvert on;
+};
+После окончания конфигурирования так же необходимо перезагрузить службу Radvd и отправить в Enable
+systemctl stop radvd
+systemctl start radvd
+systemctl enable radvd
+
+Учетки
+adduser admin/branch/network
+P@ssword
+Admin/Branch admin/Network admin
+Так же возможно понадобится выдать Root права для данных клиентов это можно выполнить посредством команды visudo
+admin   ALL=(ALL:ALL) ALL
+branch  ALL=(ALL:ALL) ALL
+network ALL=(ALL:ALL) ALL
+
+IPERF
+После установки на обоих машинах, достаточно воспользоваться командной
+iperf3 -c (ip адрес проверяемой машины) -i1 -t20
+
+backup
+Для начала на машинах HQ-R, BR-R создадим каталог, где будет хранится файл созданного скриптом бекапа.
+Можно создать его в директории mnt
+для этого пропишем mkdir /mnt/backup
+Далее нам нужно создать сам файл для создания бэкап скрипта, для этого пропишем команду
+touch /etc/backup.sh
+
+#!/bin/bash
+backup_files="/home /etc /root /boot /opt"
+dest="/mnt/backup"
+arhive_file="backup.tgz"
+echo "Backing up $backup_files to $dest/$archive_file"
+tar czf $dest/$archive_file $backup_files
+echo "backup finished"
+LS -lh $dest
+
+где backup_files — копируемые директории
+dest — место куда копируем директории
+day — параметр который указывает день бэкапа
+hostname — имя от кого он выполнился
+archive_file — конечное имя файла
+tar czf — в месте указанное в dest помещает файл с именем указанным в archive_file с содержимым указанным в backup_files
+echo — необязательные строки вывода
+Для запуска скрипта достаточно написать bash (имя_файла)
+После создания скрипта для того, чтобы распаковать наш backup архив можно воспользоваться командой
+tar -xvpzf /mnt/backup/backup.tgz -C / --numeric-owner
+Для того что бы не писать скрипт дважды, можно c помощью ssh перекинуть его на вторую машину посредством команды scp 
+для начала подключаемся по ssh командой ssh имя@адрес
+Пример: ssh network_admin@192.168.1.1
+затем посредством команды 
+scp /расположение/имя_файла имя@адрес :/расположение/имя_файла
+Пример:
+ scp /etc/backup.sh network_admin@192.168.2.1:/home/network_admin
+После успешного копирования возвращаемся в нашу машину и можем перенести скрипт в любое более удобное место
+
+SSH
+Первым делом необходимо перейти по пути nano /etc/ssh/sshd_config где в окне конфигурации нам необходимо на HQ-SRV
+найти строку и изменить значения
+Port 2222
+Для применения конфигурации необходимо перезагрузить службу командой systemctl restart ssh
+Для перенаправления трафика воспользуемся утилитой iptables-persistent
+которая устанавливается командой apt install iptables-persistent
+После установки создадим правило на подмену порта командой
+iptables -t nat -A PREROUTING -d 192.168.2.0/26 -p tcp -m tcp --dport 22 -j DNAT --to-destination 192.168.2.2:2222
+Для того что бы не прописывать команду при каждой перезагрузке сохраним нашу текущую конфигурацию командой 
+iptables-save > /etc/iptables/rules.v4 
+
+Контроль доступа
+
+В зависимости от учётной записи, которая должна иметь доступ до сервера возможны следующие развития события, 
+если нам необходим доступ только от локальных учётных записей,
+то шаг 1 после всех настроек необходимо вернуть в исходный вид
+Шаг 1 
+Заходим в настройки ssh по пути использованному ранее
+nano /etc/ssh/sshd_config
+находим и меняем строку
+ PermitRootLogin yes 
+
+после сохранения изменений перезагружаем службу ssh
+Шаг 2
+Следующим шагом необходимо создать ключ аутентификации ssh  с помощью команды 
+ssh-keygen -С «имя_устройства_с_которого_создан_ключ» везде необходимо нажать ENTER пока не создастся ключ 
+Теперь необходимо перенести публичный ключ, на сервер к которому мы будем получать доступ с помощью команды 
+ssh-copy-id имя@адрес
+Пример: 
+ssh-copy-id root@192.168.1.2
+	ssh-copy-id admin@192.168.1.2
+	Последним шагом запретим любой доступ клиенту до нашего сервера
+На HQ-SRV переходим по пути
+nano /etc/hosts.deny
+и вносим следующую строку в файл
+sshd: 192.168.1.2 (адрес машины CLI)
+перезагружаем ssh
+В конце не забудьте отключить доступ по root, если иного не указано в задании !
+
+На всякий днс
+Вся настройка будет происходить на сервере HQ-SRV
+Первым делом необходимо установить пакеты для dns командой
+apt install bind9 dnsutils(в начале можно было установить или уже сделали)
+Следующим шагом необходимо создать зоны для прямого и обратного просмотра dns
+Для этого переходим по пути nano /etc/bind/named.conf.default-zones и создаём зоны как показано на скриншотах ниже
+zone "hq.work" {
+	type master;
+	file "/etc/bind/hq";
+	allow-update {any;};
+	allow-transer {any;};
+};
+
+zone "2.168.192.in-addr.arpa" {
+	type master;
+	file "/etc/bind/hq_arpa";
+	allow-update {any;};
+};
+
+zone "0.0.0.2.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa" {
+	type master;
+	file "/etc/bind/hq6_arpa";
+	allow-update {any;};
+};
+br.work
+zone "br.work" {
+	type master;
+	file "/etc/bind/br";
+	allow-update {any;};
+	allow-transer {any;};
+};
+
+zone "3.168.192.in-addr.arpa" {
+	type master;
+	file "/etc/bind/br_arpa";
+	allow-update {any;};
+};
+
+zone "0.0.0.3.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa" {
+	type master;
+	file "/etc/bind/br6_arpa";
+	allow-update {any;};
+};
+
+Следующим шагом необходимо создать конфигурационные вайлы для наших зон. Это можно сделать, скопировав стандартные шаблоны командой cp
+Пример:
+cp /etc/bind/db.local /etc/bind/hq — создание файла для прямой зоны
+cp /etc/bind/db.127 /etc/bind/hq_arpa — создание обратной зоны ipv4
+Зону для ipv6 скопируем после конфигурации зоны для ipv4 (так как по содержанию они не отличаются)
+Первым шагом сконфигурируем зону прямого просмотра, переходим по пути
+nano /etc/bind/hq 
+@	in	soa	hq.work. root.hq.work. (
+
+Вторым шагом настроим зону обратного просмотра как указано на скриншоте ниже
+Зона находится по пути 
+nano /etc/bind/hq_arpa
+
+Третьим шагом настроим запись для зоны обратного просмотра для ipv6, для этого достаточно скопировать зону hq_arpa, то есть
+cp /etc/bind/hq_arpa /etc/bind/hq6_arpa
+После создания всех конфигов необходимо перезагрузить службу bind9
+systemctl restart bind9 (лучше stop и start)
+Похожая настройка выполняется для зоны branch.work
+Проверка выполняется посредством команд
+host IP-адрес
+host имя машины
+Примечание:
+Не забывайте, что для br-srv по заданию нет PTR записи, её создание может считаться ошибкой
+
+Имя устройства	IP
+CLI	192.168.1.0/24 255.255.255.0 - 2001::1:0/120 CLI.2 ISP.1
+ISP	192.168.1.0/24 255.255.255.0 - 2001::1:0/120 CLI.2 ISP.1
+192.168.11.0/30 255.255.255.252 - 2001::11:0/125 HQ-R.1 ISP.2
+192.168.10.0/30 255.255.255.252 - 2001::10:0/125 BR-R.1 ISP.2
+HQ-R	192.168.2.0/26 255.255.255.192 - 2001::2:0/122 SRV.2 HQ-R.1
+192.168.11.0/30 255.255.255.252 - 2001::11:0/125 HQ-R.1 ISP.2
+HQ-SRV	192.168.2.0/26 255.255.255.192 - 2001::2:0/122 SRV.2 HQ-R.1
+BR-R	192.168.3.0/28 - 255.255.255.240 - 2001::3:0/124 SRV.2 BR-R.1
+192.168.10.0/30 255.255.255.252 - 2001::10:0/125 BR-R.1 ISP.2
+BR-SRV	192.168.3.0/28 - 255.255.255.240 - 2001::3:0/124 SRV.2 BR-R.1
+
